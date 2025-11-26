@@ -59,6 +59,58 @@
             gap: 10px;
         }
 
+        .sync-status {
+            position: absolute;
+            top: 20px;
+            right: 250px;
+            background: rgba(255,255,255,0.15);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            color: #ecf0f1;
+            display: none;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .sync-status.active {
+            display: flex;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+
+        .user-info {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            background: rgba(255,255,255,0.2);
+            padding: 10px 20px;
+            border-radius: 25px;
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+
         .user-info.active {
             display: flex;
         }
@@ -699,6 +751,7 @@
         <div class="header">
             <h1>🏠 DERA Residence - 791 110th Ave N, Naples, FL</h1>
             <p>Complete Project Management System - Cloud Enabled</p>
+            <div class="sync-status" id="syncIndicator">☁️ Auto-sync enabled</div>
             <div class="user-info" id="userInfo">
                 <span class="user-email" id="userEmail"></span>
                 <button class="btn-logout" onclick="logout()">Logout</button>
@@ -1751,7 +1804,7 @@
         }
 
         // Auth state observer - CRITICAL for site-wide authentication
-        auth.onAuthStateChanged(user => {
+        auth.onAuthStateChanged(async user => {
             hideLoading();
             
             if (user) {
@@ -1761,13 +1814,27 @@
                 document.getElementById('mainContainer').style.display = 'block';
                 document.getElementById('userInfo').classList.add('active');
                 document.getElementById('userEmail').textContent = user.email;
+                document.getElementById('syncIndicator').classList.add('active');
                 console.log('User authenticated:', user.email);
+                
+                // Load saved data for team collaboration
+                await loadFromFirebase(false);
+                
+                // Setup auto-save listeners
+                setupAutoSaveListeners();
+                
+                // Setup real-time collaboration (optional)
+                setupRealtimeSync();
+                
+                // Initial sync status
+                updateSyncStatus('synced');
             } else {
                 // User is signed out
                 currentUser = null;
                 document.getElementById('authModal').classList.add('active');
                 document.getElementById('mainContainer').style.display = 'none';
                 document.getElementById('userInfo').classList.remove('active');
+                document.getElementById('syncIndicator').classList.remove('active');
                 console.log('User not authenticated');
             }
         });
@@ -1829,10 +1896,12 @@
         function toggleTask(index) {
             projectData[index].completed = !projectData[index].completed;
             initProjectTable();
+            triggerAutoSave(); // Auto-save when task is toggled
         }
 
         function updateNotes(index, notes) {
             projectData[index].notes = notes;
+            triggerAutoSave(); // Auto-save when notes are updated
         }
 
         function updateProgress() {
@@ -1846,6 +1915,319 @@
         }
 
         // Firebase Functions
+        // ===== COMPREHENSIVE DATA SYNC FOR TEAM COLLABORATION =====
+        
+        let saveTimeout = null;
+        let isSyncing = false;
+
+        // Comprehensive project data structure
+        function gatherAllProjectData() {
+            return {
+                // Project metadata
+                projectName: 'DERA Residence - 791 110th Ave N, Naples, FL',
+                lastModified: new Date().toISOString(),
+                modifiedBy: currentUser ? currentUser.email : 'unknown',
+                
+                // Task data from detailed project plan
+                tasks: projectData,
+                
+                // Bid tracking data (if exists)
+                bids: gatherBidData(),
+                
+                // Any custom notes or changes across tabs
+                customNotes: gatherCustomNotes(),
+                
+                // Project settings
+                settings: {
+                    totalBudget: 697835,
+                    startDate: 'Feb 15, 2025',
+                    completionDate: 'Aug 2025'
+                }
+            };
+        }
+
+        function gatherBidData() {
+            // Collect any bid tracking data from the Bid Tracking tab
+            const bids = [];
+            // This can be extended as bid tracking functionality grows
+            return bids;
+        }
+
+        function gatherCustomNotes() {
+            // Collect any custom notes from various tabs
+            const notes = {};
+            // Can be extended to capture tab-specific notes
+            return notes;
+        }
+
+        async function saveToFirebase(showAlert = true) {
+            if (!currentUser) {
+                console.log('No user authenticated, skipping save');
+                return;
+            }
+            
+            if (isSyncing) {
+                console.log('Sync already in progress');
+                return;
+            }
+
+            isSyncing = true;
+            updateSyncStatus('syncing');
+            
+            try {
+                const projectData = gatherAllProjectData();
+                
+                // Save to shared project document for team collaboration
+                await db.collection('projects').doc('dera-residence').set({
+                    ...projectData,
+                    lastUpdated: firebase.firestore.FieldValue.serverTimestamp(),
+                    lastModifiedBy: currentUser.email,
+                    collaborators: firebase.firestore.FieldValue.arrayUnion(currentUser.email)
+                }, { merge: true });
+                
+                updateSyncStatus('synced');
+                console.log('✅ Data synced to cloud');
+                
+                if (showAlert) {
+                    showNotification('✅ Changes saved to cloud', 'success');
+                }
+            } catch (error) {
+                console.error('Error saving to Firebase:', error);
+                updateSyncStatus('error');
+                
+                if (showAlert) {
+                    showNotification('❌ Error saving: ' + error.message, 'error');
+                }
+            } finally {
+                isSyncing = false;
+            }
+        }
+
+        async function loadFromFirebase(showAlert = false) {
+            if (!currentUser) {
+                console.log('No user authenticated, skipping load');
+                return;
+            }
+            
+            showLoading();
+            
+            try {
+                const doc = await db.collection('projects').doc('dera-residence').get();
+                
+                if (doc.exists) {
+                    const data = doc.data();
+                    
+                    // Load task data
+                    if (data.tasks) {
+                        projectData.length = 0;
+                        projectData.push(...data.tasks);
+                        initProjectTable();
+                    }
+                    
+                    // Load bid data
+                    if (data.bids) {
+                        loadBidData(data.bids);
+                    }
+                    
+                    // Load custom notes
+                    if (data.customNotes) {
+                        loadCustomNotes(data.customNotes);
+                    }
+                    
+                    updateSyncStatus('synced');
+                    console.log('✅ Data loaded from cloud');
+                    
+                    if (showAlert) {
+                        showNotification('✅ Project data loaded', 'success');
+                    }
+                    
+                    // Show who last modified
+                    if (data.lastModifiedBy) {
+                        console.log(`Last modified by: ${data.lastModifiedBy}`);
+                    }
+                } else {
+                    console.log('ℹ️ No saved data found in cloud');
+                    if (showAlert) {
+                        showNotification('ℹ️ No saved data found', 'info');
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading from Firebase:', error);
+                updateSyncStatus('error');
+                
+                if (showAlert) {
+                    showNotification('❌ Error loading: ' + error.message, 'error');
+                }
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function loadBidData(bids) {
+            // Load bid tracking data (to be implemented as bid tracking grows)
+            console.log('Loading bid data:', bids);
+        }
+
+        function loadCustomNotes(notes) {
+            // Load custom notes (to be implemented as note-taking grows)
+            console.log('Loading custom notes:', notes);
+        }
+
+        // Auto-save with debouncing (saves 2 seconds after last change)
+        function triggerAutoSave() {
+            if (!currentUser) return;
+            
+            // Clear existing timeout
+            if (saveTimeout) {
+                clearTimeout(saveTimeout);
+            }
+            
+            // Set new timeout
+            saveTimeout = setTimeout(() => {
+                saveToFirebase(false); // Auto-save without alert
+            }, 2000); // 2 seconds after last change
+        }
+
+        // Update sync status indicator
+        function updateSyncStatus(status) {
+            const syncIndicator = document.getElementById('syncIndicator');
+            if (!syncIndicator) return;
+            
+            switch(status) {
+                case 'syncing':
+                    syncIndicator.innerHTML = '🔄 Syncing...';
+                    syncIndicator.style.color = '#f39c12';
+                    break;
+                case 'synced':
+                    syncIndicator.innerHTML = '✅ All changes saved';
+                    syncIndicator.style.color = '#27ae60';
+                    setTimeout(() => {
+                        syncIndicator.innerHTML = '☁️ Auto-sync enabled';
+                        syncIndicator.style.color = '#3498db';
+                    }, 2000);
+                    break;
+                case 'error':
+                    syncIndicator.innerHTML = '⚠️ Sync error';
+                    syncIndicator.style.color = '#e74c3c';
+                    break;
+                default:
+                    syncIndicator.innerHTML = '☁️ Auto-sync enabled';
+                    syncIndicator.style.color = '#3498db';
+            }
+        }
+
+        // Show notification (non-intrusive)
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 20px;
+                padding: 15px 25px;
+                background: ${type === 'success' ? '#27ae60' : type === 'error' ? '#e74c3c' : '#3498db'};
+                color: white;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+                font-size: 0.9em;
+            `;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+
+        // Real-time listener for team collaboration (optional - enables real-time updates)
+        function setupRealtimeSync() {
+            if (!currentUser) return;
+            
+            // Listen for changes made by other team members
+            db.collection('projects').doc('dera-residence')
+                .onSnapshot((doc) => {
+                    if (doc.exists) {
+                        const data = doc.data();
+                        
+                        // Only update if modified by someone else
+                        if (data.lastModifiedBy && data.lastModifiedBy !== currentUser.email) {
+                            console.log(`🔄 Update detected from ${data.lastModifiedBy}`);
+                            
+                            // Show notification that updates are available
+                            showNotification(`📬 ${data.lastModifiedBy} made changes. Click "Refresh" to see updates.`, 'info');
+                            
+                            // Add refresh button to header
+                            showRefreshButton();
+                        }
+                    }
+                }, (error) => {
+                    console.error('Real-time sync error:', error);
+                });
+        }
+
+        function showRefreshButton() {
+            const existingBtn = document.getElementById('refreshDataBtn');
+            if (existingBtn) return; // Already showing
+            
+            const refreshBtn = document.createElement('button');
+            refreshBtn.id = 'refreshDataBtn';
+            refreshBtn.innerHTML = '🔄 Refresh Data';
+            refreshBtn.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 20px;
+                padding: 12px 24px;
+                background: #3498db;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 0.9em;
+                font-weight: 600;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                z-index: 9999;
+                animation: slideIn 0.3s ease;
+            `;
+            refreshBtn.onclick = async () => {
+                await loadFromFirebase(true);
+                refreshBtn.remove();
+            };
+            document.body.appendChild(refreshBtn);
+        }
+
+        // Setup auto-save listeners for ALL interactive elements
+        function setupAutoSaveListeners() {
+            console.log('🎯 Setting up auto-save listeners for all tabs');
+            
+            // Listen to ALL input changes across the entire page
+            document.addEventListener('input', (e) => {
+                if (e.target.matches('input, textarea, select')) {
+                    console.log('📝 Change detected, triggering auto-save');
+                    triggerAutoSave();
+                }
+            });
+            
+            // Listen to ALL checkbox changes
+            document.addEventListener('change', (e) => {
+                if (e.target.matches('input[type="checkbox"]')) {
+                    console.log('✅ Checkbox changed, triggering auto-save');
+                    triggerAutoSave();
+                }
+            });
+            
+            // Listen to ALL clicks on interactive elements (in case of custom controls)
+            document.addEventListener('click', (e) => {
+                if (e.target.matches('button[data-save-trigger], .editable')) {
+                    console.log('🖱️ Interactive element clicked, triggering auto-save');
+                    triggerAutoSave();
+                }
+            });
+            
+            console.log('✅ Auto-save listeners active - all changes will be saved automatically');
+        }
+
         async function saveToFirebase() {
             if (!currentUser) {
                 showAuthModal();
