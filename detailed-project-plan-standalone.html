@@ -710,6 +710,7 @@
 
         <div class="export-buttons">
             <button class="btn btn-secondary" onclick="syncData()">☁️ Sync Now</button>
+            <button class="btn" style="background: #9b59b6; color: white;" onclick="testFirebaseConnection()">🧪 Test Firebase</button>
             <button class="btn btn-primary" onclick="exportToCSV()">📊 Export to CSV</button>
             <button class="btn btn-primary" onclick="window.print()">🖨️ Print</button>
         </div>
@@ -976,61 +977,118 @@
         // ===== FIREBASE DATA SYNC FUNCTIONS =====
 
         async function syncData() {
-            if (!currentUser || isSyncing) return;
+            console.log('🔵 syncData called');
             
+            if (!currentUser) {
+                console.error('❌ No user authenticated, cannot sync');
+                updateSyncStatus('error');
+                return;
+            }
+            
+            if (isSyncing) {
+                console.log('⚠️ Sync already in progress, skipping');
+                return;
+            }
+            
+            console.log('✅ User authenticated:', currentUser.email);
             isSyncing = true;
             updateSyncStatus('syncing');
+            console.log('🔄 Starting sync...');
             
             try {
                 // Collect all contractor names and quotes
                 const data = {};
+                let filledCount = 0;
+                
                 projectData.forEach((item, index) => {
                     const contractorInput = document.getElementById(`contractor-${index}`);
                     const quoteInput = document.getElementById(`quote-${index}`);
                     
                     if (contractorInput) {
                         data[`contractor-${index}`] = contractorInput.value;
+                        if (contractorInput.value) filledCount++;
                     }
                     if (quoteInput) {
                         data[`quote-${index}`] = quoteInput.value;
+                        if (quoteInput.value) filledCount++;
                     }
                 });
                 
+                console.log('📦 Data collected:', {
+                    totalFields: Object.keys(data).length,
+                    filledFields: filledCount,
+                    sample: Object.keys(data).slice(0, 5)
+                });
+                
                 // Save to SHARED team document for collaboration
+                console.log('💾 Attempting to save to Firebase document: dera-residence-detailed-plan');
                 await db.collection('projects').doc('dera-residence-detailed-plan').set({
                     data: data,
                     lastUpdated: firebase.firestore.FieldValue.serverTimestamp(),
                     lastModifiedBy: currentUser.email
                 }, { merge: true });
                 
+                console.log('✅ Firebase save successful!');
                 updateSyncStatus('synced');
                 console.log('✅ Data synced successfully to team document');
             } catch (error) {
-                console.error('Sync error:', error);
+                console.error('❌ Sync error:', error);
+                console.error('Error details:', {
+                    code: error.code,
+                    message: error.message,
+                    stack: error.stack
+                });
                 updateSyncStatus('error');
                 showNotification('Sync failed: ' + error.message, 'error');
             } finally {
                 isSyncing = false;
+                console.log('🏁 Sync process completed');
             }
         }
 
         async function loadFromFirebase() {
-            if (!currentUser) return;
+            console.log('🔵 loadFromFirebase called');
             
+            if (!currentUser) {
+                console.error('❌ No user authenticated, cannot load');
+                return;
+            }
+            
+            console.log('✅ User authenticated:', currentUser.email);
             showLoading();
             
             try {
                 // Load from SHARED team document for collaboration
+                console.log('📡 Fetching document: projects/dera-residence-detailed-plan');
                 const doc = await db.collection('projects').doc('dera-residence-detailed-plan').get();
                 
+                console.log('📄 Document fetch result:', {
+                    exists: doc.exists,
+                    id: doc.id
+                });
+                
                 if (doc.exists) {
-                    const savedData = doc.data().data;
+                    const docData = doc.data();
+                    const savedData = docData.data;
+                    
+                    if (!savedData) {
+                        console.log('⚠️ Document exists but has no data field');
+                        return;
+                    }
+                    
+                    console.log('📦 Data loaded from cloud:', {
+                        totalFields: Object.keys(savedData).length,
+                        lastModifiedBy: docData.lastModifiedBy,
+                        sample: Object.keys(savedData).slice(0, 5)
+                    });
                     
                     // Restore all contractor names and quotes
+                    let restoredCount = 0;
                     Object.keys(savedData).forEach(key => {
                         const element = document.getElementById(key);
                         if (element) {
                             element.value = savedData[key];
+                            restoredCount++;
                             
                             // If it's a quote field, update the variance calculation
                             if (key.startsWith('quote-')) {
@@ -1040,6 +1098,8 @@
                         }
                     });
                     
+                    console.log(`✅ Restored ${restoredCount} fields from cloud`);
+                    
                     // Update dashboard totals
                     calculateTotals();
                     
@@ -1047,17 +1107,24 @@
                     console.log('✅ Data loaded successfully from team document');
                     
                     // Show who last modified
-                    if (doc.data().lastModifiedBy) {
-                        console.log(`Last modified by: ${doc.data().lastModifiedBy}`);
+                    if (docData.lastModifiedBy) {
+                        console.log(`👤 Last modified by: ${docData.lastModifiedBy}`);
                     }
                 } else {
                     console.log('ℹ️ No saved data found - this is your first time using the system');
+                    console.log('💡 Enter some contractor names and quotes, they will auto-save in 2 seconds');
                 }
             } catch (error) {
-                console.error('Error loading data:', error);
+                console.error('❌ Error loading data:', error);
+                console.error('Error details:', {
+                    code: error.code,
+                    message: error.message,
+                    stack: error.stack
+                });
                 showNotification('Error loading data: ' + error.message, 'error');
             } finally {
                 hideLoading();
+                console.log('🏁 Load process completed');
             }
         }
 
@@ -1086,6 +1153,48 @@
                 syncData();
             }
         }, 30000);
+
+        // Test Firebase connection
+        async function testFirebaseConnection() {
+            console.log('🧪 Testing Firebase connection...');
+            if (!currentUser) {
+                console.error('❌ No user - please log in first');
+                alert('Please log in first!');
+                return;
+            }
+            
+            try {
+                console.log('📡 Attempting to write test document...');
+                await db.collection('test').doc('connection-test-detailed-plan').set({
+                    message: 'Test from detailed project plan',
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                    user: currentUser.email
+                });
+                console.log('✅ Test write successful!');
+                
+                console.log('📡 Attempting to read test document...');
+                const doc = await db.collection('test').doc('connection-test-detailed-plan').get();
+                if (doc.exists) {
+                    console.log('✅ Test read successful! Data:', doc.data());
+                    alert('✅ Firebase connection working!\n\n' +
+                          'Test data saved and loaded successfully.\n\n' +
+                          'Your contractor names and quotes will save properly!');
+                } else {
+                    console.error('❌ Test document not found after write');
+                    alert('⚠️ Document written but not found on read.\n\nCheck Firebase Console.');
+                }
+            } catch (error) {
+                console.error('❌ Firebase test failed:', error);
+                console.error('Error details:', {
+                    code: error.code,
+                    message: error.message
+                });
+                alert('❌ Firebase test failed!\n\n' + 
+                      error.message + '\n\n' +
+                      'Error code: ' + error.code + '\n\n' +
+                      'Check console (F12) for details.');
+            }
+        }
 
         // ===== AUTH STATE OBSERVER =====
         
@@ -1195,11 +1304,16 @@
 
         // Debounced sync function for all changes
         function debouncedSync() {
+            console.log('📝 Change detected - debounced sync triggered');
             if (currentUser) {
+                console.log('⏱️ Waiting 2 seconds before syncing...');
                 clearTimeout(window.syncTimeout);
                 window.syncTimeout = setTimeout(() => {
+                    console.log('⏰ 2 seconds elapsed - calling syncData()');
                     syncData();
                 }, 2000); // Wait 2 seconds after last change
+            } else {
+                console.error('❌ Cannot sync - no user authenticated');
             }
         }
 
